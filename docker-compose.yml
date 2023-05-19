@@ -1,21 +1,36 @@
 version: '3'
 services:
-#  web:
-#    build: .
-#    ports:
-#      - "80:8000"
-#    depends_on:
-#      db:
-#        condition: service_healthy
-#    command: ["python", "app.py"]
+  ffmpeg:
+    image: jrottenberg/ffmpeg:3.3
+  app:
+    build:
+      context: ./
+      dockerfile: Dockerfile
+    environment:
+      HOST_NAME: db
+      SERVER_NAME: 0.0.0.0
+      FLASK_RUN_HOST: 0.0.0.0
+      FLASK_RUN_PORT: 1122
+    depends_on:
+      db:
+        condition: service_healthy
+        restart: true
 
+    volumes:
+      - /test-flask/data
+    links:
+      - db
   db:
-      image: postgres
-      restart: always
-      environment:
-        POSTGRES_PASSWORD: admin
-      healthcheck:
-        test: ["CMD-SHELL", "pg_isready"]
-        interval : 1s
-        timeout: 5s
-        retries: 10
+    image: postgres
+    restart: always
+    volumes:
+      - ./postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_PASSWORD: admin
+      HOST_NAME: db
+      PORT: 5432
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready" ]
+      interval: 1s
+      timeout: 5s
+      retries: 10

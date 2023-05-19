@@ -1,4 +1,5 @@
 import uuid
+import os
 
 import psycopg2
 from psycopg2 import sql
@@ -19,13 +20,13 @@ def init():
     execute('''CREATE TABLE records (
 	id int not NULL GENERATED ALWAYS AS IDENTITY,
 	uuid varchar NULL,
-	audio text NULL,
+	audio bytea NULL,
 	uid int NULL);''',True,False)
 
 def connDB():
     try:
         conn = psycopg2.connect(dbname='postgres', user='postgres',
-                                password='admin', host='localhost')
+                                password='admin', host=os.environ['HOST_NAME'])
         cursor = conn.cursor()
         return conn, cursor
     except Error as e:
@@ -45,8 +46,4 @@ def execute(sql:str, commit: bool = False,fetch=True):
         print(f'operation error \n {s}')
     except DuplicateTable:
         pass
-
-
-
-
 init()

@@ -1,15 +1,30 @@
-
 import requests
-from psycopg2 import sql
 from requests import Timeout,ConnectionError
-from flask import Flask, request, render_template, jsonify, send_file, url_for
+from flask import Flask, request, jsonify, send_file, url_for
 from dbController import *
 from abc import ABC, abstractmethod
 from pydub import AudioSegment
 import io
-
+import base64
 ERROR={'status':'error'}
 OK={'status':'ok'}
+class NotKey(Exception):
+    def __init__(self,*args):
+        if args:
+            self.text=args[0]
+        else:
+            self.text=None
+    def __str__(self):
+        return f'Ошибка запроса ошибка ключей '
+class EmptyKey(Exception):
+    def __init__(self,*args):
+        if args:
+            self.text=args[0]
+        else:
+            self.text=None
+    def __str__(self):
+        return f'Ошибка запроса ошибка ключей '
+
 class Model(ABC):
     @abstractmethod
     def save(self):
@@ -31,8 +46,9 @@ class User(Model):
             self.uuid = uuid.uuid4()
         else:
             self.id=execute(sql.SQL(f"insert into users(name,uuid) values ('{self.name}','{str(self.uuid)}') returning uid"), True)[0][0]
+            return True
     def getById(self,uid):
-        req=execute(f'select uid,uuid,name from users where uid={uid}')
+        req=execute(sql.SQL(f"select uid,uuid,name from users where uid={uid}"))
         self.uid,self.uuid,self.name=req[0][0],req[0][1],req[0][2] if req else None
     def validate(self):
         return  execute(sql.SQL(f"select exists(select uuid from users where uuid ='{self.uuid}')"))
@@ -64,25 +80,34 @@ class Record(Model):
         while not self.validate():
             self.uuid = uuid.uuid4()
         else:
-             self.id=execute(f"insert into users(name,uuid,uid) values ({self.audio},{str(self.uuid)},{self.uid}) returning id",True)[0][0]
+            self.id=execute(sql.SQL(f"insert into records(audio,uuid,uid) values ('{self.audio}','{str(self.uuid)}',{self.uid}) returning id"),True)[0][0]
+            return True
+
     def getById(self,id):
         req=execute(f'select id,uuid,audio,uid from records where id={id}')
-        self.id,self.uuid,self.audio,self.uid=req[0][0],req[0][1],req[0][2] if req else None
+
+        self.id,self.uuid,self.audio,self.uid=req[0][0],req[0][1],req[0][2], req[0][3] if req else None
     def validate(self):
-        return not execute(f'select exists(select uuid from records where uuid ={self._uuid})')
+        return  execute(sql.SQL(f"select exists(select uuid from records where uuid ='{self.uuid}')"))
 class Response():
     def __init__(self,json):
         self.data=dict(json)
     def validate(self,require):
         return self.data if len(require) ==len([True for r in require if r in self.data]) else None
-
-def convertToMp3(audio):
-
-
-    with io.BytesIO(bytes(audio,'cp437')) as file:
-        open('tmp.wav','a').write(file)
-        # return AudioSegment.from_wav(file).export()
-
+def convertToMp3(path_inp,path_out):
+    with open(path_inp,'rb') as inp:
+        with open(path_out,'wb') as out:
+            out.write(inp.read())
+    #AudioSegment.from_wav(f"{path_inp}").export(f"{path_out}", format="mp3")
+def fileToByte(path):
+    with open(path, 'rb') as data:
+        data=data.read()
+        return data
+def fileToStr(path: str) -> str:
+    with open(path, 'rb') as data:
+        return base64.b64encode(data.read()).decode('utf-8')
+def strToByte(str):
+    return base64.decodebytes(str.encode('utf-8'))
 
 def getquest(count: int) -> dict:
     drops = count
@@ -97,10 +122,7 @@ def getquest(count: int) -> dict:
         return {'status': 'error'}
     except Timeout:
         return {'status': 'error'}
-
-
 app = Flask('__name__')
-
 @app.route('/quest', methods=['POST'])
 def quest():
     if data:=Response(request.json).validate(Quest.require):
@@ -110,34 +132,78 @@ def quest():
         return jsonify(ERROR)
 @app.route('/create-user', methods=['POST'])
 def user():
-    if data:=Response(request.json).validate(User.require):
-        User(name=data['name']).save()
-        return jsonify(OK)
-    else:
+    try:
+        if not (data:=Response(request.json).validate(Record.require)):
+            raise NotKey()
+        else:
+            if not (data['name'] ):
+                raise EmptyKey()
+            else:
+                if User(name=data['name']).save():
+                    return jsonify(OK)
+                else:
+                    return jsonify(ERROR)
+    except NotKey:
         return jsonify(ERROR)
+
+    except EmptyKey:
+        return jsonify(ERROR)
+    except Exception:
+        return jsonify(ERROR)
+
+
 @app.route('/add-audio', methods=['POST'])
 def add_record():
-    if data:=Response(request.json).validate(Record.require):
-        user=User()
-        user.getById(data['uid'])
-        if user.uuid==data['uuid']:
-            mp3=convertToMp3(data['audio'])
-            record=Record(audio=mp3,uid=user.id)
-            record.save()
-            return url_for(f'records?id={record.id}&uid={record.uid}', _external=True)
+    try:
+        if not (data:=Response(request.json).validate(Record.require)):
+            raise NotKey()
         else:
-            return jsonify(ERROR)
-    else:
+            if not (data['uid'] and data['uid'] and data['uid']):
+                raise EmptyKey()
+            else:
+                user=User()
+                user.getById(data['uid'])
+                if user.uuid==data['uuid']:
+                    path_wav=f'{data["uuid"]}_wav.wav'
+                    path_mp3=f'{data["uuid"]}_mp3.mp3'
+                    with open(path_wav,'wb') as wav:
+                        wav.write(strToByte(data['audio']))
+                    convertToMp3(path_wav,path_mp3)
+                    print(str(fileToByte(path_mp3)))
+                    record=Record(audio=fileToStr(path_mp3),uid=user.uid)
+                    if record.save():
+                        return f"{request.host_url}{url_for(f'get_record', id=record.id,uid=record.uid)}"
+                    else:
+                        return jsonify(ERROR)
+    except NotKey:
         return jsonify(ERROR)
+    except EmptyKey:
+        return jsonify(ERROR)
+    except Exception:
+        return jsonify(ERROR)
+
 @app.route('/records', methods=['get'])
 def get_record():
-    if data:=Response(request.json).validate(['id','uid']):
-        record=Record()
-        record.getById(data['id'])
-        with io.BytesIO(record.audio) as file:
-            send_file(file,download_name=f'{record.uid}')
+    try:
+        if not (data:=Response(request.json).validate(Record.require)):
+            raise NotKey()
+        else:
+            if not (data['uid'] and data['uid'] and data['uid']):
+                raise EmptyKey()
+            else:
+
+                record=Record()
+                record.getById(data['id'])
+                file=io.BytesIO(strToByte(str(record.audio,'utf8')))
+                return send_file(file,download_name=f'{record.uid}.mp3',mimetype='audio/mp3',as_attachment=True)
+    except NotKey:
+        return jsonify(ERROR)
+    except EmptyKey:
+        return jsonify(ERROR)
+    except Exception:
+        return jsonify(ERROR)
 
 if __name__ == '__main__':
-    app.run(port=1122)
+    app.run(host='0.0.0.0')
 
 
