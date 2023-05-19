@@ -133,7 +133,7 @@ def quest():
 @app.route('/create-user', methods=['POST'])
 def user():
     try:
-        if not (data:=Response(request.json).validate(Record.require)):
+        if not (data:=Response(request.json).validate(User.require)):
             raise NotKey()
         else:
             if not (data['name'] ):
